@@ -36,10 +36,10 @@ param(
     [string]$ResourceGroupName,
     
     [Parameter(Mandatory = $false)]
-    [string]$Location = "East US",
+    [string]$Location = "Canada Central",
     
     [Parameter(Mandatory = $false)]
-    [string]$Environment = "dev",
+    [string]$Environment = "prod",
     
     [Parameter(Mandatory = $false)]
     [string]$SubscriptionId,
@@ -105,6 +105,42 @@ function Set-AzureSubscription {
     }
 }
 
+# Function to register required Azure features
+function Register-AzureFeatures {
+    try {
+        Write-ColorOutput "Checking and registering required Azure features..." -Color "Yellow"
+        
+        # Check Microsoft.Network provider registration
+        $networkProvider = az provider show --namespace Microsoft.Network --output json 2>$null | ConvertFrom-Json
+        if ($networkProvider.registrationState -ne "Registered") {
+            Write-ColorOutput "Registering Microsoft.Network provider..." -Color "Yellow"
+            az provider register --namespace Microsoft.Network --output none
+            Write-ColorOutput "Microsoft.Network provider registration initiated" -Color "Green"
+        } else {
+            Write-ColorOutput "Microsoft.Network provider is already registered" -Color "Green"
+        }
+        
+        # Check and register the AllowBringYourOwnPublicIpAddress feature
+        $feature = az feature show --namespace Microsoft.Network --name AllowBringYourOwnPublicIpAddress --output json 2>$null | ConvertFrom-Json
+        
+        if ($feature.properties.state -eq "Registered") {
+            Write-ColorOutput "Feature 'AllowBringYourOwnPublicIpAddress' is already registered" -Color "Green"
+        } elseif ($feature.properties.state -eq "Pending") {
+            Write-ColorOutput "Feature 'AllowBringYourOwnPublicIpAddress' registration is pending..." -Color "Yellow"
+            Write-ColorOutput "This may take several minutes. Continuing with deployment..." -Color "Yellow"
+        } else {
+            Write-ColorOutput "Registering feature 'AllowBringYourOwnPublicIpAddress'..." -Color "Yellow"
+            az feature register --namespace Microsoft.Network --name AllowBringYourOwnPublicIpAddress --output none
+            Write-ColorOutput "Feature registration initiated. This may take up to 15 minutes." -Color "Yellow"
+            Write-ColorOutput "You may need to wait and retry the deployment if it fails." -Color "Yellow"
+        }
+    }
+    catch {
+        Write-ColorOutput "Feature registration check failed: $($_.Exception.Message)" -Color "Red"
+        Write-ColorOutput "Continuing with deployment, but it may fail if features are not registered" -Color "Yellow"
+    }
+}
+
 # Function to create or verify resource group
 function Initialize-ResourceGroup {
     param(
@@ -155,13 +191,35 @@ function Deploy-BicepTemplate {
         Write-ColorOutput "Template: main.bicep" -Color "Gray"
         Write-ColorOutput "Parameters: $parametersFile" -Color "Gray"
         
-        # Deploy the template
-        $deployment = az deployment group create `
-            --resource-group $ResourceGroupName `
-            --template-file "main.bicep" `
-            --parameters "@$parametersFile" `
-            --name $deploymentName `
-            --output json | ConvertFrom-Json
+        # First attempt with current configuration
+        try {
+            $deployment = az deployment group create `
+                --resource-group $ResourceGroupName `
+                --template-file "main.bicep" `
+                --parameters "@$parametersFile" `
+                --name $deploymentName `
+                --output json | ConvertFrom-Json
+        }
+        catch {
+            $errorMessage = $_.Exception.Message
+            if ($errorMessage -like "*No matching inventory*" -or $errorMessage -like "*VIP*") {
+                Write-ColorOutput "IP inventory issue detected. Trying alternative configurations..." -Color "Yellow"
+                
+                # Try Basic SKU instead of Standard
+                $parameters.parameters.publicIpSku.value = "Basic"
+                $parameters | ConvertTo-Json -Depth 10 | Set-Content $parametersFile
+                
+                Write-ColorOutput "Retrying with Basic SKU..." -Color "Yellow"
+                $deployment = az deployment group create `
+                    --resource-group $ResourceGroupName `
+                    --template-file "main.bicep" `
+                    --parameters "@$parametersFile" `
+                    --name "$deploymentName-retry" `
+                    --output json | ConvertFrom-Json
+            } else {
+                throw
+            }
+        }
         
         if ($deployment.properties.provisioningState -eq "Succeeded") {
             Write-ColorOutput "Deployment completed successfully!" -Color "Green"
@@ -237,27 +295,31 @@ try {
         Set-AzureSubscription -SubscriptionId $SubscriptionId
     }
     
-    # Step 3: Initialize resource group
-    Write-ColorOutput "`nStep 3: Initializing resource group..." -Color "Magenta"
+    # Step 3: Register required Azure features
+    Write-ColorOutput "`nStep 3: Checking Azure feature registration..." -Color "Magenta"
+    Register-AzureFeatures
+    
+    # Step 4: Initialize resource group
+    Write-ColorOutput "`nStep 4: Initializing resource group..." -Color "Magenta"
     Initialize-ResourceGroup -Name $ResourceGroupName -Location $Location
     
-    # Step 4: Deploy Bicep template
-    Write-ColorOutput "`nStep 4: Deploying infrastructure..." -Color "Magenta"
+    # Step 5: Deploy Bicep template
+    Write-ColorOutput "`nStep 5: Deploying infrastructure..." -Color "Magenta"
     $deploymentOutputs = Deploy-BicepTemplate -ResourceGroupName $ResourceGroupName -Location $Location -Environment $Environment
     
-    # Step 5: Wait for IP allocation
-    Write-ColorOutput "`nStep 5: Verifying IP allocation..." -Color "Magenta"
+    # Step 6: Wait for IP allocation
+    Write-ColorOutput "`nStep 6: Verifying IP allocation..." -Color "Magenta"
     $ipAddress = Wait-ForIPAllocation -PublicIpAddress $deploymentOutputs.PublicIpAddress -MaxWaitSeconds $WaitForIP
     
-    # Step 6: Display deployment results
+    # Step 7: Display deployment results
     Write-ColorOutput "`nDeployment Results:" -Color "Green"
     Write-ColorOutput "  Public IP Address: $ipAddress" -Color "White"
     Write-ColorOutput "  Public IP Name: $($deploymentOutputs.PublicIpName)" -Color "White"
     Write-ColorOutput "  FQDN: $($deploymentOutputs.PublicIpFqdn)" -Color "White"
     Write-ColorOutput "  Storage Account: $($deploymentOutputs.StorageAccountName)" -Color "White"
     
-    # Step 7: Check IP reputation
-    Write-ColorOutput "`nStep 6: Checking IP reputation..." -Color "Magenta"
+    # Step 8: Check IP reputation
+    Write-ColorOutput "`nStep 8: Checking IP reputation..." -Color "Magenta"
     
     if (Test-Path ".\Check-IPReputation.ps1") {
         try {
@@ -280,7 +342,7 @@ try {
         Write-ColorOutput "  .\Check-IPReputation.ps1 -IpAddress $ipAddress" -Color "White"
     }
     
-    # Step 8: Summary
+    # Step 9: Summary
     Write-ColorOutput "`n=== Summary ===" -Color "Cyan"
     Write-ColorOutput "✓ Resource group initialized: $ResourceGroupName" -Color "Green"
     Write-ColorOutput "✓ Infrastructure deployed successfully" -Color "Green"

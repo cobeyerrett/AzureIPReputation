@@ -5,7 +5,7 @@ param location string = resourceGroup().location
 param publicIpNamePrefix string = 'pip-reputable'
 
 @description('Environment suffix (e.g., dev, test, prod)')
-param environment string = 'prod'
+param environment string = 'dev'
 
 @description('Public IP allocation method')
 @allowed([
@@ -19,7 +19,7 @@ param publicIpAllocationMethod string = 'Static'
   'Basic'
   'Standard'
 ])
-param publicIpSku string = 'Basic'
+param publicIpSku string = 'Standard'
 
 @description('Public IP SKU tier')
 @allowed([
@@ -33,7 +33,7 @@ param domainNameLabel string = '${publicIpNamePrefix}-${environment}-${uniqueStr
 
 var publicIpName = '${publicIpNamePrefix}-${environment}'
 
-// Public IP Address resource
+// Public IP Address resource (simplified - without features that require registration)
 resource publicIpAddress 'Microsoft.Network/publicIPAddresses@2024-05-01' = {
   name: publicIpName
   location: location
@@ -47,7 +47,7 @@ resource publicIpAddress 'Microsoft.Network/publicIPAddresses@2024-05-01' = {
       domainNameLabel: domainNameLabel
     }
     idleTimeoutInMinutes: 4
-    // Removed ipTags and ddosSettings to reduce inventory constraints
+    // Removed ipTags and ddosSettings to avoid feature registration requirements
   }
   tags: {
     Purpose: 'IP-Reputation-Testing'

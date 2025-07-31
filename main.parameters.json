@@ -3,25 +3,22 @@
   "contentVersion": "1.0.0.0",
   "parameters": {
     "location": {
-      "value": "East US"
+      "value": "Canada Central"
     },
     "publicIpNamePrefix": {
       "value": "pip-reputable"
     },
     "environment": {
-      "value": "dev"
+      "value": "prod"
     },
     "publicIpAllocationMethod": {
       "value": "Static"
     },
     "publicIpSku": {
-      "value": "Standard"
+      "value": "Basic"
     },
     "publicIpSkuTier": {
       "value": "Regional"
-    },
-    "domainNameLabelScope": {
-      "value": "ResourceGroupReuse"
     }
   }
 }
