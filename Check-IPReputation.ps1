@@ -83,23 +83,73 @@ function Test-AbuseIPDB {
     param([string]$IP)
     
     try {
-        # Note: This requires an API key from AbuseIPDB
-        # For demo purposes, we'll simulate a response
         Write-ColorOutput "Checking AbuseIPDB..." -Color "Yellow"
         
-        # In a real implementation, you would use:
-        # $headers = @{ 'Key' = $env:ABUSEIPDB_API_KEY; 'Accept' = 'application/json' }
-        # $response = Invoke-RestMethod -Uri "https://api.abuseipdb.com/api/v2/check?ipAddress=$IP&maxAgeInDays=90" -Headers $headers
+        # Check if API key is available
+        if (-not $env:ABUSEIPDB_API_KEY) {
+            Write-ColorOutput "  Warning: ABUSEIPDB_API_KEY environment variable not set" -Color "Yellow"
+            return @{
+                Service = "AbuseIPDB"
+                Status = "Error"
+                Confidence = 0
+                LastReported = "N/A"
+                Details = "API key not configured"
+                Checked = $false
+            }
+        }
         
-        # Simulated response for demo
-        Start-Sleep -Seconds 1
+        # Make API call to AbuseIPDB
+        $headers = @{ 'Key' = $env:ABUSEIPDB_API_KEY; 'Accept' = 'application/json' }
+        $response = Invoke-RestMethod -Uri "https://api.abuseipdb.com/api/v2/check?ipAddress=$IP&maxAgeInDays=90" -Headers $headers
+        
+        # Extract values from actual API response
+        $abuseConfidence = [int]$response.data.abuseConfidenceScore
+        $usageType = $response.data.usageType
+        $isWhitelisted = $response.data.isWhitelisted
+        $totalReports = $response.data.totalReports
+        $lastReportedAt = $response.data.lastReportedAt
+        
+        # Determine status based on response
+        $status = if ($isWhitelisted) {
+            "Whitelisted"
+        } elseif ($abuseConfidence -ge 75) {
+            "High Risk"
+        } elseif ($abuseConfidence -ge 25) {
+            "Moderate Risk"
+        } elseif ($totalReports -gt 0) {
+            "Low Risk"
+        } else {
+            "Clean"
+        }
+        
+        # Format last reported date
+        $lastReported = if ($lastReportedAt) {
+            try {
+                $date = [DateTime]::Parse($lastReportedAt)
+                $date.ToString("yyyy-MM-dd")
+            } catch {
+                $lastReportedAt
+            }
+        } else {
+            "Never"
+        }
+        
+        # Create details message
+        $details = if ($totalReports -gt 0) {
+            "Total reports: $totalReports, Confidence: $abuseConfidence%"
+        } else {
+            "No abuse reports found"
+        }
         
         return @{
             Service = "AbuseIPDB"
-            Status = "Clean"
-            Confidence = 95
-            LastReported = "Never"
-            Details = "No abuse reports found"
+            Status = $status
+            Confidence = $abuseConfidence
+            UsageType = $usageType
+            LastReported = $lastReported
+            Details = $details
+            TotalReports = $totalReports
+            IsWhitelisted = $isWhitelisted
             Checked = $true
         }
     }
@@ -122,22 +172,91 @@ function Test-VirusTotal {
     try {
         Write-ColorOutput "Checking VirusTotal..." -Color "Yellow"
         
-        # Note: This requires an API key from VirusTotal
-        # For demo purposes, we'll simulate a response
+        # Check if API key is available
+        if (-not $env:VIRUSTOTAL_API_KEY) {
+            Write-ColorOutput "  Warning: VIRUSTOTAL_API_KEY environment variable not set" -Color "Yellow"
+            return @{
+                Service = "VirusTotal"
+                Status = "Error"
+                Confidence = 0
+                LastReported = "N/A"
+                Details = "API key not configured"
+                Checked = $false
+            }
+        }
+
+        # Make API call to VirusTotal
+        $headers = @{}
+        $headers.add("x-apikey", $env:VIRUSTOTAL_API_KEY)     
+        $headers.add("accept", "application/json")
+        $response = Invoke-RestMethod -Uri "https://www.virustotal.com/api/v3/ip_addresses/$IP" -Headers $headers
         
-        # In a real implementation, you would use:
-        # $headers = @{ 'x-apikey' = $env:VIRUSTOTAL_API_KEY }
-        # $response = Invoke-RestMethod -Uri "https://www.virustotal.com/api/v3/ip_addresses/$IP" -Headers $headers
+        # Extract values from actual API response
+        $attributes = $response.data.attributes
+        $lastAnalysisStats = $attributes.last_analysis_stats
+        $reputation = $attributes.reputation
+        $lastAnalysisDate = $attributes.last_analysis_date
+        $country = $attributes.country
+        $asOwner = $attributes.as_owner
         
-        # Simulated response for demo
-        Start-Sleep -Seconds 1
+        # Calculate detection metrics
+        $malicious = [int]$lastAnalysisStats.malicious
+        $suspicious = [int]$lastAnalysisStats.suspicious
+        $clean = [int]$lastAnalysisStats.undetected
+        $totalEngines = $malicious + $suspicious + $clean + [int]$lastAnalysisStats.harmless
+        
+        # Calculate confidence based on detections
+        $detectionRatio = if ($totalEngines -gt 0) {
+            [math]::Round((($malicious + $suspicious) / $totalEngines) * 100, 2)
+        } else {
+            0
+        }
+        
+        # Determine status based on response
+        $status = if ($malicious -gt 5) {
+            "High Risk"
+        } elseif ($malicious -gt 0 -or $suspicious -gt 3) {
+            "Moderate Risk"
+        } elseif ($suspicious -gt 0) {
+            "Low Risk"
+        } elseif ($reputation -lt -10) {
+            "Poor Reputation"
+        } else {
+            "Clean"
+        }
+        
+        # Format last analysis date
+        $lastReported = if ($lastAnalysisDate) {
+            try {
+                $unixTime = [DateTimeOffset]::FromUnixTimeSeconds($lastAnalysisDate)
+                $unixTime.ToString("yyyy-MM-dd")
+            } catch {
+                "Unknown"
+            }
+        } else {
+            "Never"
+        }
+        
+        # Create details message
+        $details = if ($totalEngines -gt 0) {
+            "Detections: $malicious/$totalEngines engines, Reputation: $reputation"
+        } else {
+            "No analysis data available"
+        }
         
         return @{
             Service = "VirusTotal"
-            Status = "Clean"
-            Confidence = 90
-            LastReported = "Never"
-            Details = "No malicious activity detected"
+            Status = $status
+            Confidence = $detectionRatio
+            LastReported = $lastReported
+            Details = $details
+            MaliciousCount = $malicious
+            SuspiciousCount = $suspicious
+            CleanCount = $clean
+            TotalEngines = $totalEngines
+            Reputation = $reputation
+            Country = $country
+            ASOwner = $asOwner
             Checked = $true
         }
     }
@@ -267,6 +386,11 @@ function Invoke-IPReputationCheck {
     foreach ($result in $Script:Results) {
         $color = switch ($result.Status) {
             "Clean" { "Green" }
+            "Whitelisted" { "Cyan" }
+            "Low Risk" { "Yellow" }
+            "Moderate Risk" { "DarkYellow" }
+            "High Risk" { "Red" }
+            "Poor Reputation" { "Red" }
             "Listed" { "Red" }
             "Suspicious" { "Yellow" }
             "Error" { "Magenta" }
@@ -277,16 +401,33 @@ function Invoke-IPReputationCheck {
         if ($result.Details) {
             Write-ColorOutput "    Details: $($result.Details)" -Color "Gray"
         }
+        if ($result.Service -eq "AbuseIPDB" -and $result.Checked) {
+            Write-ColorOutput "    Confidence: $($result.Confidence)%" -Color "Gray"
+            Write-ColorOutput "    Last Reported: $($result.LastReported)" -Color "Gray"
+            if ($result.UsageType) {
+                Write-ColorOutput "    Usage Type: $($result.UsageType)" -Color "Gray"
+            }
+        }
+        if ($result.Service -eq "VirusTotal" -and $result.Checked) {
+            Write-ColorOutput "    Detection Ratio: $($result.Confidence)%" -Color "Gray"
+            Write-ColorOutput "    Last Analysis: $($result.LastReported)" -Color "Gray"
+            if ($result.TotalEngines -gt 0) {
+                Write-ColorOutput "    Engines: $($result.MaliciousCount) malicious, $($result.SuspiciousCount) suspicious of $($result.TotalEngines)" -Color "Gray"
+            }
+        }
     }
     
     # Overall assessment
-    $cleanCount = ($Script:Results | Where-Object { $_.Status -eq "Clean" }).Count
-    $listedCount = ($Script:Results | Where-Object { $_.Status -eq "Listed" }).Count
+    $cleanCount = ($Script:Results | Where-Object { $_.Status -eq "Clean" -or $_.Status -eq "Whitelisted" }).Count
+    $riskCount = ($Script:Results | Where-Object { $_.Status -like "*Risk*" -or $_.Status -eq "Listed" -or $_.Status -eq "Poor Reputation" }).Count
     $errorCount = ($Script:Results | Where-Object { $_.Status -eq "Error" }).Count
+    $highRiskCount = ($Script:Results | Where-Object { $_.Status -eq "High Risk" -or $_.Status -eq "Listed" -or $_.Status -eq "Poor Reputation" }).Count
     
     Write-ColorOutput "`nOverall Assessment:" -Color "Green"
-    if ($listedCount -gt 0) {
-        Write-ColorOutput "  REPUTATION: POOR - IP is listed on $listedCount service(s)" -Color "Red"
+    if ($highRiskCount -gt 0) {
+        Write-ColorOutput "  REPUTATION: POOR - IP has high risk indicators on $highRiskCount service(s)" -Color "Red"
+    } elseif ($riskCount -gt 0) {
+        Write-ColorOutput "  REPUTATION: MODERATE - IP has some risk indicators on $riskCount service(s)" -Color "Yellow"
     } elseif ($cleanCount -eq $Script:Results.Count) {
         Write-ColorOutput "  REPUTATION: GOOD - IP is clean across all services" -Color "Green"
     } else {
@@ -306,9 +447,10 @@ function Invoke-IPReputationCheck {
             TotalServices = $Script:Results.Count
             ServicesChecked = $Script:Results.Count - $errorCount
             CleanServices = $cleanCount
-            ListedServices = $listedCount
+            RiskServices = $riskCount
+            HighRiskServices = $highRiskCount
             ErrorServices = $errorCount
-            OverallReputation = if ($listedCount -gt 0) { "POOR" } elseif ($cleanCount -eq $Script:Results.Count) { "GOOD" } else { "UNKNOWN" }
+            OverallReputation = if ($highRiskCount -gt 0) { "POOR" } elseif ($riskCount -gt 0) { "MODERATE" } elseif ($cleanCount -eq $Script:Results.Count) { "GOOD" } else { "UNKNOWN" }
         }
     }
     
@@ -400,6 +542,8 @@ try {
     # Exit with appropriate code
     if ($summary.Summary.OverallReputation -eq "POOR") {
         exit 1
+    } elseif ($summary.Summary.OverallReputation -eq "MODERATE") {
+        exit 1  # Consider moderate risk as warning
     } else {
         exit 0
     }
